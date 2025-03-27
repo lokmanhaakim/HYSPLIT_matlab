@@ -1,3 +1,3 @@
 # HYSPLIT_matlab
 
-Constant emission and Time varying emssion of HYSPLIT using matlab command. The example shown refering to previous Fukushima nuclear accident by using GDAS data.
+Constant emission (HYSPLIT_Run) and Time varying emssion of HYSPLIT(Batch_HYSPLIT) using matlab command. The example shown refering to previous Fukushima nuclear accident by using GDAS data.
