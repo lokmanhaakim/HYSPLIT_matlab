@@ -1,10 +1,31 @@
 %% Setup locations
-clc;
-Location = ["Mersing","TasikKenyir"];
+clc;clearvars;
+NPPStation = readtable("C:\Users\Admin\Desktop\nuclear-wind\NPPStationPRIS.xlsx");
+NPPStation = NPPStation(~isnan(NPPStation.Longitude),:);
+[~,idxa] = unique(NPPStation(:,1:2));
+NPPStation = NPPStation(idxa,:);
+Location = NPPStation.Location;
 Location = arrayfun(@(x) regexprep(x, '[^a-zA-Z]', ''),Location);
-Lat = [2.43,5.04];
-Lon = [103.84,105.03];
-Time = [datetime(2021,3,14)];
+Location = string(Location);
+Lat = NPPStation.Latitude;
+Lon = NPPStation.Longitude;
+Time = [datetime(2021,3,14),datetime(2022,3,14)];
+Altitude = zeros(length(Lon),1);        
+
+for l = 1:numel(Lat)
+
+    try
+        web = sprintf("https://api.open-meteo.com/v1/elevation?latitude=%.2f&longitude=%.2f",Lat(l),Lon(l));
+        AltitudeWeb = webread(web);
+        Altitude(l) = AltitudeWeb.elevation;
+
+    catch
+        Altitude(l) = 10;
+    end
+
+end
+
+
 % Period = 24*7;
 NewData = [];
 %% Setup emission rate (Terada et al.,2020)
@@ -44,16 +65,77 @@ EmissionTable(2:end+1,:) = EmissionTable;
 EmissionTable(:,5)=[];
 EmissionTable(1,:) = ["YYYY" "MM" "DD" "HH" "Cs-137" "I-131p"];
 writematrix(EmissionTable,"TeradaEmission.txt","Delimiter"," ");
+%% Met directory 
+
+Period = RunTimes(1);
+metdir = fullfile("C:","Users","Admin","Desktop","MetData");
+
 %% Batch file 
 %  metfileName(s,:) = "gdas1."+lower(string(month(Period_interval(s),"shortname")))+string(mod(year(Period_interval(s)),100))+".w"+string(ceil(day(Period_interval(s))./7));
 cd("C:\HYSPLIT\working")
 ctFile = './Helloworld.bat';
-
-str_Start = extractAfter(sprintf("%d%02d%02d%02d",year(StartDate),month(StartDate),day(StartDate),hour(StartDate)),2);
-str_End = extractAfter(sprintf("%d%02d%02d%02d",year(EndDate),month(EndDate),day(EndDate),hour(EndDate)),2);
+CompletedSimulation = 0;
 
 for l = 1:numel(Location)
     for t = 1:numel(Time)
+        Innertic = tic;
+        delete('SG*');
+        delete('CG*');
+        delete('DG*');
+        delete('TG*');
+
+        temp_met = [];
+
+        StartDate = Time(t);
+        Duration = EmissionRate.("Duration(h)");
+        Emission1 =  EmissionRate.("137Cs");
+        Emission2 = EmissionRate.("131I");
+
+        UTCExplosion = StartDate + hours(cumsum(Duration));
+        UTCExplosion = [StartDate;UTCExplosion(1:end-1)];
+
+        EmissionTable = table(UTCExplosion,Duration,Emission1,Emission2,'VariableNames',["UTC","Duration","137Cs","131I"]);
+        EmissionTable.YYYY = year(EmissionTable.UTC);
+        EmissionTable.MM = month(EmissionTable.UTC);
+        EmissionTable.DD = day(EmissionTable.UTC);
+        EmissionTable.HH = hour(EmissionTable.UTC);
+        RunTimes = hours(EmissionTable.UTC(end)-EmissionTable.UTC(1:end-1));
+        RunTimes = [RunTimes;0];
+
+        EndDate = EmissionTable.UTC(end);
+
+        cd("C:\HYSPLIT\working");
+        EmissionTable = EmissionTable(:,["YYYY" "MM" "DD" "HH" "137Cs" "131I"]);
+        Emission1 = arrayfun(@(x) sprintf("%.1E",x),Emission1);
+        Emission2 = arrayfun(@(x) sprintf("%.1E",x),Emission2);
+        EmissionTable.Properties.VariableNames(end-1:end) = ["Cs-137","I-131p"];
+        EmissionTable(:,end-1) = table(Emission1);
+        EmissionTable(:,end) = table(Emission2);
+
+        EmissionTable=EmissionTable(:,["YYYY" "MM" "DD" "HH"]);
+        EmissionTable = arrayfun(@(x) sprintf("%02d",x),EmissionTable{:,:});
+        EmissionTable = [EmissionTable,RunTimes,Emission1,Emission2];
+        writematrix(EmissionTable,"Allday.txt","Delimiter"," ");
+        EmissionTable(2:end+1,:) = EmissionTable;
+        EmissionTable(:,5)=[];
+        EmissionTable(1,:) = ["YYYY" "MM" "DD" "HH" "Cs-137" "I-131p"];
+        writematrix(EmissionTable,"TeradaEmission.txt","Delimiter"," ");
+
+        str_Start = extractAfter(sprintf("%d%02d%02d%02d",year(StartDate),month(StartDate),day(StartDate),hour(StartDate)),2);
+        str_End = extractAfter(sprintf("%d%02d%02d%02d",year(EndDate),month(EndDate),day(EndDate),hour(EndDate)),2);
+
+        end_time = Time(t)+hours(Period);
+        diff_week = week(end_time)-week(Time(t));
+        Period_interval= Time(t):days(7):end_time+1;
+        for s = 1:numel(Period_interval)
+            met_dir = fullfile(metdir,"gdas1","/");
+            metfileName(s,:) = "gdas1."+lower(string(month(Period_interval(s),"shortname")))+string(mod(year(Period_interval(s)),100))+".w"+string(ceil(day(Period_interval(s))./7));
+            temp_met = [temp_met;met_dir;metfileName(s,:)];
+        end
+
+        for tM = 1:numel(temp_met)
+            str_temp_met(tM,:) = sprintf("echo %s                      >>CONTROL",temp_met(tM));
+        end
 
         fid = fopen(ctFile, 'w');
 
@@ -97,23 +179,14 @@ for l = 1:numel(Location)
             "echo !SB!";...
             sprintf("    echo %s %02d !DAY! !HOUR!            >CONTROL",extractBefore(str_Start,3),month(StartDate));...
             "    echo 2                       >>CONTROL";...
-            sprintf("    echo %.2f %.2f 1.0    >>CONTROL",Lat(l),Lon(l));...
-            sprintf("    echo %.2f %.2f 1.0    >>CONTROL",Lat(l),Lon(l));...
+            sprintf("    echo %.2f %.2f %.2f    >>CONTROL",Lat(l),Lon(l),Altitude(l));...
+            sprintf("    echo %.2f %.2f %.2f    >>CONTROL",Lat(l),Lon(l),Altitude(l));...
             "echo !RUN!"
             "    echo !RUN!                   >>CONTROL";...
             "    echo 0                       >>CONTROL";...
             "    echo 10000.0                 >>CONTROL";...
-            "    echo 5                       >>CONTROL";...
-            "    echo C:\Users\Admin\Desktop\MetData\gdas1\                      >>CONTROL";...
-            "    echo gdas1.mar21.w2         >>CONTROL";...
-            "    echo C:\Users\Admin\Desktop\MetData\gdas1\                      >>CONTROL";...
-            "    echo gdas1.mar21.w3         >>CONTROL";...
-            "    echo C:\Users\Admin\Desktop\MetData\gdas1\                      >>CONTROL";...
-            "    echo gdas1.mar21.w4         >>CONTROL";...
-            "    echo C:\Users\Admin\Desktop\MetData\gdas1\                      >>CONTROL";...
-            "    echo gdas1.mar21.w5         >>CONTROL";...
-            "    echo C:\Users\Admin\Desktop\MetData\gdas1\                      >>CONTROL";...
-            "    echo gdas1.apr21.w1         >>CONTROL";...
+            sprintf("    echo %d                       >>CONTROL",numel(metfileName));...
+            sprintf("    %s\n",str_temp_met);
             "    echo 2                       >>CONTROL";...
             "    echo RNUC                    >>CONTROL";...
             "    echo 1.0                     >>CONTROL";...
@@ -175,6 +248,7 @@ for l = 1:numel(Location)
             "%PGM%\exec\con2asc -d, -ifdnpp_total.bin -ofdnpp_total -s1";...
             "%PGM%\exec\con2asc -d, -ifdnpp_sums.bin -ofdnpp_sums -s1"];
 
+
         for i = 1:length(batchCommands)
             fprintf(fid, "%s\n", batchCommands(i));
         end
@@ -183,7 +257,7 @@ for l = 1:numel(Location)
         system('Helloworld.bat');
 
         disp("Conc file will be read..");
-        %%
+        
         Conc = readtable("fdnpp_total.txt");
         Sums = readtable("fdnpp_sums.txt");
         Conc.UTC = datetime(Conc.YEAR,Conc.MO,Conc.DA,Conc.HR,0,0);
@@ -208,17 +282,47 @@ for l = 1:numel(Location)
         % % ldata.RegionCell = RegionCell;
         ldata.Centroid = CentroidCell;
         % % ldata.Area = zeros(height(ldata),1);
-       
+
         for i = 1:height(ldata)
             ldata.Area(i) = areaint(ldata.Concentration{i}.LAT,ldata.Concentration{i}.LON,wgs84Ellipsoid("km"));
         end
 
-        NewData.(Location(l)).(sprintf("T%02d%02d%02d%02d",year(Time(t)),month(Time(t)),day(Time(t)),hour(Time(t)))).Concentration = Conc;
+        files = dir('CG*.txt');
+
+        files = files(~[files.isdir]);
+
+        Conc_allData = [];
+
+        for i = 1:length(files)
+            filename = files(i).name;
+            disp(['Reading ', filename]);
+
+
+            data = readmatrix(filename);
+
+            % Concatenate
+            Conc_allData = [Conc_allData; data];
+        end
+
+        Conc_alldata = array2table(Conc_allData);
+        Conc_alldata.UTC = datetime(Conc_alldata{:,1},Conc_alldata{:,2},Conc_alldata{:,3},Conc_alldata{:,4},0,0);
+        Conc_alldata = movevars(Conc_alldata,"UTC","Before",1);
+        Conc_alldata(:,2:5)=[];
+        Conc_alldata.Properties.VariableNames = ["UTC","LAT","LON","Cs137000","Cs137010","I131000","I131010"];
+
+        NewData.(Location(l)).(sprintf("T%02d%02d%02d%02d",year(Time(t)),month(Time(t)),day(Time(t)),hour(Time(t)))).Conc = Conc_alldata;
+        NewData.(Location(l)).(sprintf("T%02d%02d%02d%02d",year(Time(t)),month(Time(t)),day(Time(t)),hour(Time(t)))).Total = Conc;
         NewData.(Location(l)).(sprintf("T%02d%02d%02d%02d",year(Time(t)),month(Time(t)),day(Time(t)),hour(Time(t)))).ldata = ldata;
         NewData.(Location(l)).(sprintf("T%02d%02d%02d%02d",year(Time(t)),month(Time(t)),day(Time(t)),hour(Time(t)))).Sums = Sums;
     end
+
+    CompletedSimulation = CompletedSimulation+1;
+    disp("Percentage completed :" + (CompletedSimulation*100)./(numel(Time)*(numel(Location)))+"%")
+    Innertoc = toc(Innertic);
+    disp("Time taken : ",CompletedSimulation);
 
 end
 
 
 disp('Complete.')
+
